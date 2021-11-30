@@ -9,8 +9,9 @@ from bs4 import BeautifulSoup as bs
 from django.core.management import BaseCommand
 
 from scrape.management.util.browser_wrapper import BrowserWrapper
-from scrape.management.util.taumahi import tiki_ōrau
+from scrape.management.util.taumahi import Taumahi
 from scrape.models import Newspaper, Publication, Page
+
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 script_name = os.path.split(__file__)[1][0:-3]
@@ -200,73 +201,6 @@ def mātītori_kupu(kupu):
     return re.findall(r'[\w\W]*?[{}][{}]*\n|[\w\W]+$'.format(tohutuhi, tohukī), kupu)
 
 
-def rāringa_kaituhituhi(tāuru, tīmata_kōwae, store_page):
-    # This function splits the text from a given page into its constituent
-    # Paragraphs, and writes them along with the page's information (date
-    # Retrieved, newspaper name, issue name, page number, Māori word count,
-    # Ambiguous word count, other word count, total word count, Māori word
-    # Percentage, the raw text, and the url of the page). If it determines that
-    # The paragraph carries on to the next page, and it is not the last page of
-    # An issue, it carries the information that changes from page to page (text,
-    # Page number, url) to the next time the function is called, i.e. the next
-    # Page. It tries to find where the paragraph continues, and then writes it
-    # To the text csv with the information of the page where it was first found.
-    # If it can't, it will continue to loop this information forward until the
-    # Last page of the issue. It takes a Rārangi class object, and a csv writer.
-
-    if tāuru.kupu:  # Only writes the information if text was able to be extracted
-
-        # Splits the text up into paragraphs
-        kupu_tūtira = mātītori_kupu(tāuru.kupu)
-
-        # Loops through the paragraphs
-        for kupu in kupu_tūtira:
-
-            # Strips leading and trailing white space
-            tāuru.kupu = kupu.strip()
-
-            # If the paragraph is the last paragraph on the page
-            if kupu == kupu_tūtira[-1]:
-                tīmata_kōwae = kupu_moroki(tāuru, tīmata_kōwae)
-
-            # If there is leftover text from the previous page, Find the first paragraph that isn't in caps, i.e. isn't a title
-            if tīmata_kōwae and not kupu.isupper():
-
-                # Add the leftover text to the first paragraph that isn't entirely uppercase
-                tāuru.kupu = tīmata_kōwae.kupu + tāuru.kupu
-                # The page number and url that are to be written with the paragraph are from the original paragraph, so they are taken from the global variable and assigned to the variables that will be written
-                whārangi_tau = tīmata_kōwae.tau
-                whārangi_taukaea = tīmata_kōwae.taukaea
-                # Then the global variable is cleared, because it is being written, so nothing is being carried over to the next call of the function
-                tīmata_kōwae = None
-
-            else:
-                # If nothing is being added from a previous page, the page number and url that are to be written come from the current page, and are assigned to the variables which will be written
-                whārangi_tau = tāuru.tau
-                whārangi_taukaea = tāuru.taukaea
-
-            # Replaces all white space with a space
-            tāuru.kupu = clean_whitespace(tāuru.kupu)
-            # If there is no text left after it has been stripped, there is no point writing it, so the function continues onto the next paragraph
-            if not tāuru.kupu:
-                continue
-
-            tāuru.urutau = whakarauiri(tāuru.kupu)
-            tāuru.urutau = tohutau(tāuru.urutau)
-            # Gets the percentage of the text that is Māori
-            tāuru.māori, tāuru.rangirua, tāuru.pākehā, tāuru.tapeke, tāuru.ōrau = tiki_ōrau(
-                tāuru.urutau)
-            # Prepares the row that is to be written to the csv
-
-            # ['newspaper', 'issue', 'page', 'māori_words', 'ambiguous_words', 'other_words',
-            #  'total_words', 'percent_māori', 'adapted_text', 'url', 'raw_text'])
-
-            store_page(tāuru.niupepa, tāuru.perehitanga, tāuru.published_date, whārangi_tau, tāuru.māori, tāuru.rangirua, tāuru.pākehā,
-                       tāuru.tapeke, tāuru.ōrau, tāuru.urutau, whārangi_taukaea, tāuru.kupu)
-
-    return tīmata_kōwae
-
-
 def rīwhi_tauriterite(kimikimi, taumahi_ingoa, kōwae):
     # Finds all matches to the input regex, in the input text, using the input string to determine what to replace the match with
     # The first argument is a regex expression, the second is a string containing a function name from the tau module, the third is the text that is to be modified
@@ -368,13 +302,18 @@ class Command(BaseCommand):
 
         self.browser_wrapper = BrowserWrapper(cache_dir)
         self.url_querier = UrlQuerier(self.cache, self.browser_wrapper)
+        self.progress_cache = dict()
 
-        self.progress_cache_file = os.path.join(cache_dir, 'progress.pkl')
-        if os.path.isfile(self.progress_cache_file):
-            with open(self.progress_cache_file, 'rb') as f:
-                self.progress_cache = pickle.load(f)
-        else:
-            self.progress_cache = dict()
+        self.use_cache = True
+        self.commit = False
+        self.taumahi = Taumahi()
+
+    def init_cache(self):
+        if self.use_cache:
+            self.progress_cache_file = os.path.join(cache_dir, 'progress.pkl')
+            if os.path.isfile(self.progress_cache_file):
+                with open(self.progress_cache_file, 'rb') as f:
+                    self.progress_cache = pickle.load(f)
 
     def store_page(self, npp_name, issue, published_date, page_number, maori_words, ambiguous_words, other_words, total_words,
                    percent_maori, adapted_text, url, raw_text):
@@ -430,10 +369,73 @@ class Command(BaseCommand):
 
         pg.save()
 
+    def rāringa_kaituhituhi(self, tāuru, tīmata_kōwae):
+        # This function splits the text from a given page into its constituent
+        # Paragraphs, and writes them along with the page's information (date
+        # Retrieved, newspaper name, issue name, page number, Māori word count,
+        # Ambiguous word count, other word count, total word count, Māori word
+        # Percentage, the raw text, and the url of the page). If it determines that
+        # The paragraph carries on to the next page, and it is not the last page of
+        # An issue, it carries the information that changes from page to page (text,
+        # Page number, url) to the next time the function is called, i.e. the next
+        # Page. It tries to find where the paragraph continues, and then writes it
+        # To the text csv with the information of the page where it was first found.
+        # If it can't, it will continue to loop this information forward until the
+        # Last page of the issue. It takes a Rārangi class object, and a csv writer.
+
+        if tāuru.kupu:  # Only writes the information if text was able to be extracted
+
+            # Splits the text up into paragraphs
+            kupu_tūtira = mātītori_kupu(tāuru.kupu)
+
+            # Loops through the paragraphs
+            for kupu in kupu_tūtira:
+
+                # Strips leading and trailing white space
+                tāuru.kupu = kupu.strip()
+
+                # If the paragraph is the last paragraph on the page
+                if kupu == kupu_tūtira[-1]:
+                    tīmata_kōwae = kupu_moroki(tāuru, tīmata_kōwae)
+
+                # If there is leftover text from the previous page, Find the first paragraph that isn't in caps, i.e. isn't a title
+                if tīmata_kōwae and not kupu.isupper():
+
+                    # Add the leftover text to the first paragraph that isn't entirely uppercase
+                    tāuru.kupu = tīmata_kōwae.kupu + tāuru.kupu
+                    # The page number and url that are to be written with the paragraph are from the original paragraph, so they are taken from the global variable and assigned to the variables that will be written
+                    whārangi_tau = tīmata_kōwae.tau
+                    whārangi_taukaea = tīmata_kōwae.taukaea
+                    # Then the global variable is cleared, because it is being written, so nothing is being carried over to the next call of the function
+                    tīmata_kōwae = None
+
+                else:
+                    # If nothing is being added from a previous page, the page number and url that are to be written come from the current page, and are assigned to the variables which will be written
+                    whārangi_tau = tāuru.tau
+                    whārangi_taukaea = tāuru.taukaea
+
+                # Replaces all white space with a space
+                tāuru.kupu = clean_whitespace(tāuru.kupu)
+                # If there is no text left after it has been stripped, there is no point writing it, so the function continues onto the next paragraph
+                if not tāuru.kupu:
+                    continue
+
+                tāuru.urutau = whakarauiri(tāuru.kupu)
+                tāuru.urutau = tohutau(tāuru.urutau)
+                # Gets the percentage of the text that is Māori
+                tāuru.māori, tāuru.rangirua, tāuru.pākehā, tāuru.tapeke, tāuru.ōrau = self.taumahi.tiki_ōrau(tāuru.kupu)
+                # Prepares the row that is to be written to the csv
+
+                if self.commit:
+                    self.store_page(tāuru.niupepa, tāuru.perehitanga, tāuru.published_date, whārangi_tau, tāuru.māori,
+                               tāuru.rangirua, tāuru.pākehā,
+                               tāuru.tapeke, tāuru.ōrau, tāuru.urutau, whārangi_taukaea, tāuru.kupu)
+
+        return tīmata_kōwae
+
     def add_arguments(self, parser):
-        parser.add_argument('--textfile', action='store', dest='textfile', required=False, type=str, default=None,
-                            help="Output csv file where the date retrieved, newspaper names, issue names, page numbers,"
-                                 " word counts, Māori percentage, page text and page urls are stored")
+        parser.add_argument('--no-cache', action='store_false', dest='use_cache', default=False)
+        parser.add_argument('--commit', action='store_true', dest='commit', default=False)
 
     def hātepe_perehitanga(self, niupepa):
         # This function extracts the text from every page of the newspaper issue it
@@ -462,7 +464,7 @@ class Command(BaseCommand):
         # If it hasn't been told to ignore the first page, it passes the information to the writing function
         if not niupepa.mātāmuri:
             print("Extracted page " + tāuru.tau)
-            rāringa_kaituhituhi(tāuru, tīmata_kōwae, self.store_page)
+            self.rāringa_kaituhituhi(tāuru, tīmata_kōwae)
         else:
             tāuru.kupu = mātītori_kupu(tāuru.kupu)[-1]
             tīmata_kōwae = kupu_moroki(tāuru, tīmata_kōwae)
@@ -488,7 +490,7 @@ class Command(BaseCommand):
                 print("Extracted page " + tāuru.tau)
 
                 # Passes the tuple and csv writer to the csv writing function
-                tīmata_kōwae = rāringa_kaituhituhi(tāuru, tīmata_kōwae, self.store_page)
+                tīmata_kōwae = self.rāringa_kaituhituhi(tāuru, tīmata_kōwae)
 
             # If there is some other option, the function ends, to prevent an infinite loop.
             else:
@@ -559,12 +561,15 @@ class Command(BaseCommand):
 
     def finalise(self):
         self.cache.save()
-        with open(self.progress_cache_file, 'wb') as f:
-            pickle.dump(self.progress_cache, f)
+        if self.use_cache:
+            with open(self.progress_cache_file, 'wb') as f:
+                pickle.dump(self.progress_cache, f)
 
-    def handle(self, textfile, *args, **options):
+    def handle(self, *args, **options):
         self.browser_wrapper.auto_solve_captcha = True
-        # self.populate()
+        self.use_cache = options['use_cache']
+        self.commit = options['commit']
+        self.init_cache()
 
         try:
             self.matua()
