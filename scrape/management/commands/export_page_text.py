@@ -26,16 +26,16 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         bar = Bar('Exporting', max=Page.objects.count())
         with open(self.export_file_name, 'w') as f:
-            headers = ['Newspaper', 'Date', 'Volume', 'Number', 'Page No', 'Adapted Text', 'Raw Text', 'URL']
+            headers = ['Newspaper', 'Date', 'Volume', 'Number', 'Page No', 'Adapted Text', 'Raw Text', 'URL', 'Percent Maori']
             df = pd.DataFrame(columns=headers)
             vl = Page.objects.all() \
                 .order_by('publication__id', 'publication__published_date', 'publication__volume', 'page_number') \
                 .values_list('publication__newspaper__name', 'publication__published_date', 'publication__volume',
-                             'publication__number', 'page_number', 'adapted_text', 'raw_text', 'url')
+                             'publication__number', 'page_number', 'adapted_text', 'raw_text', 'url', 'percentage_maori')
 
             row_ind = 0
-            for npp_name, date, volume, number, pg_number, adapted_text, raw_text, url in vl:
-                df.loc[row_ind] = [npp_name, date.strftime(settings.DATE_INPUT_FORMAT), volume, number, pg_number, adapted_text, raw_text, url]
+            for npp_name, date, volume, number, pg_number, adapted_text, raw_text, url, percentage_maori in vl:
+                df.loc[row_ind] = [npp_name, date.strftime(settings.DATE_INPUT_FORMAT), volume, number, pg_number, adapted_text, raw_text, url, percentage_maori]
                 row_ind += 1
                 bar.next()
             bar.finish()
