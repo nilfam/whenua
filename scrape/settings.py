@@ -194,8 +194,14 @@ else:  # assume we have fully-specified smtp configuration
 
 database_url = envconf['database_url']
 
+if database_url.startswith('mongo'):
+    default_database_config = dj_mongo_database_url.parse(database_url)
+    default_database_config['ENGINE'] = 'djongo'
+else:
+    default_database_config = dj_database_url.parse(database_url)
+
 DATABASES = {
-    'default': dj_database_url.parse(database_url)
+    'default': default_database_config
 }
 
 # if database_url.startswith('mongo'):

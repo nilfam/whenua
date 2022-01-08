@@ -8,6 +8,8 @@ import os
 import time
 from contextlib import contextmanager
 from shutil import copyfile
+
+import dj_mongo_database_url
 from colorama import Fore, Back, Style, init as colorama_init
 
 import pureyaml
@@ -220,6 +222,10 @@ def reset_sqlite():
         pass
 
     return True, ''
+
+
+def reset_mongodb():
+    return False, 'Operation not supported'
 
 
 @contextmanager
@@ -442,7 +448,8 @@ def probe_mysql():
 reset_db_functions = {
     'sqlite3': reset_sqlite,
     'postgresql': reset_postgres,
-    'mysql': reset_mysql
+    'mysql': reset_mysql,
+    'mongodb': reset_mongodb
 }
 
 restore_db_functions = {
@@ -588,8 +595,14 @@ if __name__ == '__main__':
         if not backup_file:
             raise Exception('To backup data, parameter --file is required')
 
-    db_config = dj_database_url.parse(config['database_url'])
-    db_engine = db_config['ENGINE']
+    database_url = config['database_url']
+    if database_url.startswith('mongo'):
+        db_config = dj_mongo_database_url.parse(database_url)
+        db_engine = 'djongo'
+    else:
+        db_config = dj_database_url.parse(database_url)
+        db_engine = db_config['ENGINE']
+
     db_name = db_config['NAME']
     db_user = db_config['USER']
     db_pass = db_config['PASSWORD']
@@ -602,6 +615,8 @@ if __name__ == '__main__':
         db_engine_short_name = 'postgresql'
     elif db_engine == 'django.db.backends.mysql':
         db_engine_short_name = 'mysql'
+    elif db_engine == 'djongo':
+        db_engine_short_name = 'mongodb'
     else:
         raise Exception('Database engine {} is not supported.'.format(db_engine))
 
