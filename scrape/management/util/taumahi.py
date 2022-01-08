@@ -110,8 +110,9 @@ class Taumahi:
 
         for kupu in kupu_hou:
             if kupu.lower() in self.kupu_rangirua:
-                if self.kupu_rangirua:
-                    print('"{}" is an ambiguous word'.format(kupu))
+                if self.verbose:
+                    if self.kupu_rangirua:
+                        print('"{}" is an ambiguous word'.format(kupu))
                 kupu = self.hōputu(kupu, False)
                 if kupu not in raupapa_rangirua:
                     raupapa_rangirua[kupu] = 0
@@ -139,7 +140,8 @@ class Taumahi:
                     raupapa_pākehā[kupu] += 1
                     continue
                 else:
-                    print('"{}" is a Maori word'.format(kupu))
+                    if self.verbose:
+                        print('"{}" is a Maori word'.format(kupu))
                     kupu = self.hōputu(kupu, False)
                     if kupu not in raupapa_māori:
                         raupapa_māori[kupu] = 0

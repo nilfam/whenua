@@ -3,8 +3,8 @@ __all__ = ['tables', 'actions']
 tables = \
     {
         "pages-info": {
-            "class": "scrape.Page",
-            "getter": "scrape.bulk_get_page_info",
+            "class": "scrape.Paragraph",
+            "getter": "scrape.bulk_get_paragraph_info",
             "columns": [
                 {
                     "name": "Publication",
@@ -25,10 +25,10 @@ tables = \
                     "is_attribute": False
                 },
                 {
-                    "name": "Page number",
-                    "slug": "page_number",
-                    "type": "INTEGER",
-                    "is_attribute": True
+                    "name": "Article title",
+                    "slug": "article_title",
+                    "type": "SHORT_TEXT",
+                    "is_attribute": False
                 },
                 {
                     "name": "% Maori",
@@ -37,15 +37,8 @@ tables = \
                     "is_attribute": True,
                 },
                 {
-                    "name": "Original text",
-                    "slug": "raw_text",
-                    "type": "LONG_TEXT",
-                    "is_attribute": True,
-                    "editable": True,
-                },
-                {
-                    "name": "Adapted text",
-                    "slug": "adapted_text",
+                    "name": "Content",
+                    "slug": "content",
                     "type": "LONG_TEXT",
                     "is_attribute": True,
                     "editable": True,

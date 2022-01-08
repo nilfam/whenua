@@ -7,11 +7,15 @@ import zipfile
 
 from bs4 import BeautifulSoup
 from django.core.management import BaseCommand
+from progress.bar import Bar
 
 from scrape.management.util.browser_wrapper import BrowserWrapper
-from scrape.models import Newspaper as DbNewspaper
+from scrape.management.util.taumahi import Taumahi
+from scrape.models import Newspaper as DbNewspaper, Paragraph as DbParagraph
 from scrape.models import Publication as DbPublication
-from scrape.models import Page as DbPage
+from scrape.models import Article as DbArticle
+
+from django.db import OperationalError
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 script_name = os.path.split(__file__)[1][0:-3]
@@ -35,10 +39,12 @@ class DbStorage:
     def __init__(self):
         self.newspapers = None
         self.publications = None
-        self.pages = None
+        self.articles = None
+        self.paragraphs = None
         self.populate_newspapers_from_database()
         self.populate_publications_from_database()
-        self.populate_pages_from_database()
+        self.populate_articles_from_database()
+        self.populate_paragraphs_from_database()
 
     def populate_newspapers_from_database(self):
         self.newspapers = {x[1]: x[0] for x in DbNewspaper.objects.values_list('id', 'name')}
@@ -49,8 +55,17 @@ class DbStorage:
         for id, newspaper_title, published_date in pub_vl:
             self.publications[(newspaper_title, published_date)] = id
 
-    def populate_pages_from_database(self):
-        self.pages = {x[0]: x[1] for x in DbPage.objects.values_list('url', 'id')}
+    def populate_articles_from_database(self):
+        article_vl = DbArticle.objects.values_list('id', 'publication__newspaper__name', 'publication__published_date', 'index')
+        self.articles = {}
+        for id, newspaper_title, published_date, article_index in article_vl:
+            self.articles[(newspaper_title, published_date, article_index)] = id
+
+    def populate_paragraphs_from_database(self):
+        para_vl = DbParagraph.objects.values_list('id', 'article__publication__newspaper__name', 'article__publication__published_date', 'article__index', 'index')
+        self.paragraphs = {}
+        for id, newspaper_title, published_date, article_index, index in para_vl:
+            self.paragraphs[(newspaper_title, published_date, article_index, index)] = id
 
     def get_newspaper(self, name):
         return self.newspapers.get(name, None)
@@ -58,8 +73,11 @@ class DbStorage:
     def get_publication(self, newspaper_title, published_date):
         return self.publications.get((newspaper_title, published_date), None)
 
-    def get_page(self, url):
-        return self.pages.get(url, None)
+    def get_article(self, newspaper_title, published_date, index):
+        return self.articles.get((newspaper_title, published_date, index), None)
+
+    def get_paragraph(self, newspaper_title, published_date, article_index, index):
+        return self.paragraphs.get((newspaper_title, published_date, article_index, index), None)
 
     def add_newspaper(self, db_npp):
         self.newspapers[db_npp.name] = db_npp
@@ -67,14 +85,35 @@ class DbStorage:
     def add_publication(self, newspaper_title, db_pub):
         self.publications[(newspaper_title, db_pub.published_date)] = db_pub
 
-    def add_pages(self, db_page):
-        self.pages[db_page.url] = db_page
+    def add_article(self, newspaper_title, published_date, db_article):
+        key = (newspaper_title, published_date, db_article.index)
+        if self.articles.get(key, None) is None:
+            self.articles[key] = db_article
+
+    def add_paragraph(self, newspaper_title, published_date, article_index, db_para):
+        key = (newspaper_title, published_date, article_index, db_para.index)
+        if self.paragraphs.get(key, None) is None:
+            self.paragraphs[key] = db_para
+
+    def bulk_create(self, cls, objs):
+        success = False
+        batch_size = None
+        while not success:
+            try:
+                cls.objects.bulk_create(objs, batch_size=batch_size)
+                success = True
+            except OperationalError:
+                print('Connection error, reduce batch size')
+                if batch_size is None:
+                    batch_size = 10000
+                else:
+                    batch_size = int(batch_size * 0.9)
 
     def save(self):
         unsaved_npps = [x for x in self.newspapers.values() if not isinstance(x, int)]
 
         print('Saving {} newspapers'.format(len(unsaved_npps)))
-        DbNewspaper.objects.bulk_create(unsaved_npps)
+        self.bulk_create(DbNewspaper, unsaved_npps)
         self.populate_newspapers_from_database()
 
         unsaved_pubs = [x for x in self.publications.values() if not isinstance(x, int)]
@@ -87,21 +126,34 @@ class DbStorage:
             assert pub.newspaper_id is not None
 
         print('Saving {} publications'.format(len(unsaved_pubs)))
-        DbPublication.objects.bulk_create(unsaved_pubs)
+        self.bulk_create(DbPublication, unsaved_pubs)
         self.populate_publications_from_database()
 
-        unsaved_pages = [x for x in self.pages.values() if not isinstance(x, int)]
-        for page in unsaved_pages:
-            if page.publication_id is None or not isinstance(page.publication_id, int):
-                page.publication_id = self.get_publication(page.newspaper_title, page.published_date)
-                if page.publication_id is None:
-                    raise Exception('Publication "{}/{}" not found'.format(page.newspaper_title, page.published_date))
+        unsaved_articles = [x for x in self.articles.values() if not isinstance(x, int)]
+        for article in unsaved_articles:
+            if article.publication_id is None or not isinstance(article.publication_id, int):
+                article.publication_id = self.get_publication(article.newspaper_title, article.published_date)
+                if article.publication_id is None:
+                    raise Exception('Publication "{}/{}" not found'.format(article.newspaper_title, article.published_date))
                 
-            assert page.publication_id is not None
+            assert article.publication_id is not None
 
-        print('Saving {} pages'.format(len(unsaved_pages)))
-        DbPage.objects.bulk_create(unsaved_pages)
-        self.populate_pages_from_database()
+        print('Saving {} articles'.format(len(unsaved_articles)))
+        self.bulk_create(DbArticle, unsaved_articles)
+        self.populate_articles_from_database()
+        
+        unsaved_paras = [x for x in self.paragraphs.values() if not isinstance(x, int)]
+        for para in unsaved_paras:
+            if para.article_id is None or not isinstance(para.article_id, int):
+                para.article_id = self.get_article(para.newspaper_title, para.published_date, para.article_index)
+                if para.article_id is None:
+                    raise Exception('Article "{}/{}/#{}" not found'.format(para.newspaper_title, para.published_date, para.article_index))
+                
+            assert para.article_id is not None
+
+        print('Saving {} paragraphs'.format(len(unsaved_paras)))
+        self.bulk_create(DbParagraph, unsaved_paras)
+        self.populate_paragraphs_from_database()
 
 
 class AutoSaveCache:
@@ -205,14 +257,92 @@ class Page(SelfQueryOrLoad):
             publications.append((maori_link, full_title, published_date))
         return publications
 
-    def query_all_publications(self, soup, db_storage=None):
+    def save_article(self, article):
+        pass
+
+    def detect_articles(self, npp_title, pub_published_date, para_and_links, db_storage : DbStorage):
+        articles = []
+        current_article = None
+
+        for p, url in para_and_links:
+            if p.isupper():
+                # Save the previous article if exists
+                if current_article is not None:
+                    if len(current_article.current_contents) > 0:
+                        articles.append(current_article)
+                current_article = DbArticle()
+                current_article.title = p
+                current_article.url = url
+                current_article.current_contents = []
+            else:
+                if current_article is None:
+                    current_article = DbArticle()
+                    current_article.title = ''
+                    current_article.url = url
+                    current_article.current_contents = []
+                current_article.current_contents.append(p)
+
+        if current_article is not None:
+            if len(current_article.current_contents) > 0:
+                articles.append(current_article)
+
+        for i, article in enumerate(articles, 1):
+            article.index = i
+            article.newspaper_title = npp_title
+            article.published_date = pub_published_date
+            db_storage.add_article(npp_title, pub_published_date, article)
+
+        return articles
+
+    def contruct_paragraphs_and_extract_maori_info(self, article, taumahi):
+        paragraphs = []
+        for i, paragraph_content in enumerate(article.current_contents, 1):
+            maori_count, ambiguous_count, english_count, total_count, percentage = taumahi.tiki_ōrau(paragraph_content)
+            paragraph = DbParagraph()
+            paragraph.index = i
+            paragraph.maori_word_count = maori_count
+            paragraph.ambiguous_word_count = ambiguous_count
+            paragraph.other_word_count = english_count
+            paragraph.total_word_count = total_count
+            paragraph.percentage_maori = percentage
+            paragraph.content = paragraph_content
+
+            paragraphs.append(paragraph)
+        return paragraphs
+
+    def query_all_publications(self, soup, db_storage, taumahi):
         publication_links = self._get_publication_links(soup)
         for link, full_title, published_date in publication_links:
             publication = Publication(link, full_title, published_date, self.cache, self.browser_wrapper)
             psoup = publication.query_or_load()
 
             print('Querying content of {}/{}'.format(full_title, published_date))
-            publication.query_all_contents(psoup, db_storage)
+            para_and_links, db_pub = publication.query_all_contents(psoup, db_storage)
+
+            newspaper_title = publication.newspaper_title
+            published_date = publication.published_date
+
+            articles = self.detect_articles(newspaper_title, published_date, para_and_links, db_storage)
+            bar = Bar('Extracting articles from page', max=len(articles))
+
+            for article in articles:
+                paragraphs = self.contruct_paragraphs_and_extract_maori_info(article, taumahi)
+                # if isinstance(db_pub, int):
+                #     article.publication_id = db_pub
+                # else:
+                #     article.publication = db_pub
+                # article.save()
+
+                for i, paragraph in enumerate(paragraphs, 1):
+                    paragraph.article = article
+                    paragraph.index = i
+                    paragraph.newspaper_title = newspaper_title
+                    paragraph.published_date = published_date
+                    paragraph.article_index = article.index
+                    db_storage.add_paragraph(newspaper_title, published_date, article.index, paragraph)
+
+                bar.next()
+            bar.finish()
 
 
 class IndexPage(Page):
@@ -235,21 +365,27 @@ class Publication(SelfQueryOrLoad):
     def query_all_contents(self, psoup, db_storage=None):
         if db_storage is not None:
             db_pub = self.populate_database(db_storage)
-        
+
         next_content_link = self.url
         soup = psoup
         page_no = 1
+        all_pages_ps = []
         while next_content_link is not None:
             content = Content(next_content_link, self.cache, self.browser_wrapper)
             if soup is None:
                 soup = content.query_or_load()
-                
+
             if db_storage is not None:
-                content.populate_database(soup, db_pub, self.newspaper_title, self.published_date, page_no, db_storage)
-            
+                ps = content.populate_database(soup, db_pub, self.newspaper_title, self.published_date, page_no, db_storage)
+                if ps is not None:
+                    for p in ps:
+                        all_pages_ps.append((p, next_content_link))
+
             next_content_link = content.get_next_link(soup)
             soup = None
             page_no += 1
+
+        return all_pages_ps, db_pub
 
     def populate_database(self, db_storage : DbStorage):
         if len(self.published_date) == 8:
@@ -280,7 +416,7 @@ class Publication(SelfQueryOrLoad):
         if db_newspaper is None:
             db_newspaper = DbNewspaper(name=self.newspaper_title)
             db_storage.add_newspaper(db_newspaper)
-            
+
         db_pub = DbPublication()
         db_pub.newspaper_title = self.newspaper_title
         db_pub.published_date = self.published_date
@@ -297,7 +433,7 @@ class Publication(SelfQueryOrLoad):
         no_matcher = NEWSPAPER_NO_MATCHER.match(self.full_title)
         if no_matcher is not None:
             db_pub.number = int(no_matcher.group(2))
-            
+
         db_storage.add_publication(self.newspaper_title, db_pub)
         return db_pub
 
@@ -317,8 +453,6 @@ class Content(SelfQueryOrLoad):
     def populate_database(self, soup, db_pub, newspaper_title, published_date, page_no, db_storage : DbStorage):
         self.newspaper_title = newspaper_title
         self.published_date = published_date
-        if db_storage.get_page(self.url) is not None:
-            return
 
         document_text = []
         td = soup.select('.documenttext table tbody td')
@@ -334,26 +468,14 @@ class Content(SelfQueryOrLoad):
             p_texts.append(p.text.strip())
             p.decompose()
 
-        document_text.append(td.text.strip())
+        left_over_text = td.text.strip()
+        if len(left_over_text) > 0:
+            document_text.append(left_over_text)
         for p_text in p_texts:
             if len(p_text) > 0:
                 document_text.append(p_text)
 
-        db_page = DbPage()
-        db_page.newspaper_title = self.newspaper_title
-        db_page.published_date = self.published_date
-
-        if isinstance(db_pub, int):
-            db_page.publication_id = db_pub
-        else:
-            db_page.publication_id = None
-        db_page.url = self.url
-        db_page.page_number = page_no
-        document_text = '\n'.join(document_text)
-        document_text = re.sub('[ \t]{2,}', ' ', document_text)
-        db_page.content = re.sub('\n\s+\n', '\n', document_text)
-
-        db_storage.add_pages(db_page)
+        return document_text
 
 
 class Command(BaseCommand):
@@ -363,7 +485,7 @@ class Command(BaseCommand):
         cache_file = os.path.join(cache_dir, 'cache.pkl')
         self.cache = AutoSaveCache(cache_file, 10)
         self.browser_wrapper = BrowserWrapper(cache_dir)
-        self.db_storage = DbStorage()
+        self.taumahi = Taumahi()
 
     def _query_or_populate(self, store=False):
         """
@@ -381,19 +503,46 @@ class Command(BaseCommand):
 
         :return:
         """
+        cache_file = os.path.join(cache_dir, 'parse_cache.pkl')
+        if os.path.isfile(cache_file):
+            with open(cache_file, 'rb') as f:
+                parse_cache = pickle.load(f)
+        else:
+            parse_cache = {}
+
         index_page = IndexPage(INITIAL_URL, self.cache, self.browser_wrapper)
         soup = index_page.query_or_load()
         year_links = index_page.get_links_to_years(soup)
-        db_storage = self.db_storage if store else None
-        index_page.query_all_publications(soup, db_storage)
 
-        self.db_storage.save()
+        if parse_cache.get(INITIAL_URL, None) is None:
+            if store:
+                db_storage = DbStorage()
+            else:
+                db_storage = None
+            index_page.query_all_publications(soup, db_storage, self.taumahi)
+            db_storage.save()
+            parse_cache[INITIAL_URL] = True
+            with open(cache_file, 'wb') as f:
+                pickle.dump(parse_cache, f)
+        else:
+            print('Skip {}'.format(INITIAL_URL))
 
         for link in year_links:
-            page = Page(link, self.cache, self.browser_wrapper)
-            soup = page.query_or_load()
-            page.query_all_publications(soup, db_storage)
-            self.db_storage.save()
+            if parse_cache.get(link, None) is None:
+                if store:
+                    db_storage = DbStorage()
+                else:
+                    db_storage = None
+                page = Page(link, self.cache, self.browser_wrapper)
+                soup = page.query_or_load()
+                page.query_all_publications(soup, db_storage, self.taumahi)
+                db_storage.save()
+                parse_cache[link] = True
+
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(parse_cache, f)
+            else:
+                print('Skip {}'.format(link))
 
     def finalise(self):
         self.cache.save()
