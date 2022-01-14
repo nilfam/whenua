@@ -98,9 +98,10 @@ class DbStorage:
     def bulk_create(self, cls, objs):
         success = False
         batch_size = None
+        retval = None
         while not success:
             try:
-                cls.objects.bulk_create(objs, batch_size=batch_size)
+                retval = cls.objects.bulk_create(objs, batch_size=batch_size)
                 success = True
             except OperationalError:
                 print('Connection error, reduce batch size')
@@ -108,6 +109,7 @@ class DbStorage:
                     batch_size = 10000
                 else:
                     batch_size = int(batch_size * 0.9)
+        return retval
 
     def save(self):
         unsaved_npps = [x for x in self.newspapers.values() if not isinstance(x, int)]
