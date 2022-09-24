@@ -1,10 +1,7 @@
 import json
 import os
-import pathlib
-import pickle
-import pandas as pd
-from django.conf import settings
 
+import pandas as pd
 from django.core.management import BaseCommand
 from progress.bar import Bar
 
